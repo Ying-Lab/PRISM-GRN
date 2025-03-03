@@ -16,11 +16,19 @@ python setup.py install
 Example
 -----
 ```bash
-import scibd as si
-import scanpy as sc
-dataset = sc.read_h5ad(./data/Forebrain.h5ad)
-KNNITER = si.KNNIter(dataset,strategy = 'PCoA')
-result = KNNITER.IterCall()
+from prism import model
+from prism import utils
+
+args['flag'] = False
+adj_train, feature, feature_ATAC, train_ids, val_ids, test_ids, train_labels, val_labels, test_labels = load_sc_data(Expression_data_path, Genescore_data_path, label_path)
+adj_train = F.normalize(adj_train, p=1, dim=1)
+
+scc = model4.BioGRN(nfeat=feature.shape[1],     ## the size of feature -> cell num
+                    nhid=args['hidden'],         ## hidden layer size
+                    dropout=args['dropout'],     ## hyperparameter
+                    ns=args['ns'],               ## the size of VAE node embedding 
+                    alpha=args['alpha'],         ## hyperparameter
+                    flag=args['flag']).to(device)
 
 ```
 
