@@ -1,1 +1,1 @@
-# BioGRN
+# PRISM
