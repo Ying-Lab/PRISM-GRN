@@ -32,6 +32,7 @@ scc = model.BioGRN(nfeat=feature.shape[1],     ## the size of feature -> cell nu
                    flag=args['flag']).to(device)
 
 ```
+The more detailed usage is exemplified in demo.
 
 
 Citation
