@@ -56,7 +56,7 @@ from shutil import rmtree
 from setuptools import find_packages, setup, Command
 
 # Package meta-data.
-NAME = 'PRISM_GRN'
+NAME = 'prism_grn'
 DESCRIPTION = 'A Probabilistic Model for Recover GRNs with Multi-Omics Data https://github.com/Ying-Lab/PRISM'
 URL = 'https://github.com/Ying-Lab/PRISM/'
 EMAIL = 'zscotty@stu.xmu.edu.cn'

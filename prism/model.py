@@ -1,23 +1,19 @@
-## GAT + GCN + VAE
-## integrating all steps into pyro framework
-### loss 
-### revise the loss pipeline
-### the simplest 
-
 import os
 import pandas as pd
 import warnings
 warnings.filterwarnings("ignore")
+import pyro
+import pyro.distributions as dist
 import torch.nn.functional as F
 import torch
 import torch.nn as nn
-from layer import MLP, Exp, ExpM
+# import prism
+from prism.layer import MLP, Exp, ExpM
+from prism.layer import GraphConvolution, GraphAttentionLayer
 torch.set_default_tensor_type(torch.FloatTensor)
-import pyro
-import pyro.distributions as dist
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-from layer import GraphConvolution, GraphAttentionLayer
 
+
+# device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 ## Graph VAE encoder 
 class Encoder(nn.Module):
     def __init__(self, nhid, nz) -> None:
@@ -50,11 +46,11 @@ class GATEncoder(nn.Module):
         self.dropout = dropout
         # concat: whether input elu layer
         # encoder
-        # 实例化一个 GraphAttentionLayer 
+
         self.attention_z = GraphAttentionLayer(nfeat, nhid, dropout=dropout, alpha=alpha, concat=True)
         self.encoder = Encoder(nhid, nz)  ## nhid -> nz
 
-        # z->s 后续看看怎么修改，为什么不能共享而是要两个
+        # z->s 
         self.attention_s = GraphAttentionLayer(nfeat, nhid, dropout=dropout, alpha=alpha, concat=True)
 
         self.linear_s = nn.Linear(nhid + nz, ns)  ## nhid + nz -> ns
@@ -74,11 +70,8 @@ class GATEncoder(nn.Module):
         z_sum = 0
         if stage == 'training':
         # encoder 
-            ## GAT的embedding 过了一层VAE
             mu, logvar = self.encoder(x)
-            ## 重采样z 
             z = self.reparametrize(mu, logvar)
-            #就算重采样后的z
             z_sum = z.var(dim=1).sum() ## the var of each gene and summed up
             z_mean = torch.mean(z, dim=0).unsqueeze(0)  # 1 * nz the mean across all genes on each dimension 
         else: 
@@ -180,7 +173,6 @@ class GAT(nn.Module):
         x_edges = torch.cat([x_src, x_dst], dim=1)
         output = F.relu(self.linear1(x_edges))
         if self.flag:
-            ## 只对 训练集中已知的关联 进行重构
             output = self.linear2(output)
         else:
             output = self.linear2(output).squeeze(1)
@@ -203,7 +195,7 @@ class DotProductPredictor(nn.Module):
 ##define the entity model
 # gene * cell  
 # nfeat, nhid, nz, ns,dropout, alpha, base_model='gcn', nheads=8, flag=False
-class BioGRN(nn.Module):
+class PRISM(nn.Module):
     def __init__(self,
                  nfeat = None,  ## cell num
                  nhid = None,   ## hidden size
@@ -214,8 +206,6 @@ class BioGRN(nn.Module):
                 ## default setting
                  dropout = 0.1,
                  alpha = 0.35,
-                 base_model = 'gcn',  #base model for graph recon
-                 nheads = 8,
                  flag = True, 
                  config_enum = "parallel",
                  use_cuda = True,
@@ -229,6 +219,11 @@ class BioGRN(nn.Module):
 
         ##defalt parameters
         self.use_cuda = use_cuda
+        ## if there is no gpu, device is cpu
+        if self.use_cuda:
+            self.device = torch.device("cuda:0")
+        else:
+            self.device = torch.device("cpu")
         self.allow_broadcast = config_enum 
         self.aux_loss_multiplier = aux_loss_multiplier
         ## predicting GRN edge based on gene embeddings
@@ -240,7 +235,6 @@ class BioGRN(nn.Module):
         ## GAT for gene embedding 
         self.linear_s = nn.Linear(nhid + ns, ns)
         self.GeneGRNEncoder = GraphAttentionLayer(nfeat, nhid, dropout=dropout, alpha=alpha, concat=True)
-        ## 看是否需要 这个独立的GAT，先定义在这里
         self.GeneGRNEncoder_VAE = GraphAttentionLayer(nfeat, nhid, dropout=dropout, alpha=alpha, concat=True) ## revised later 
         ## Recon GRN 
         #choice 1: directly based on the trained embeddings from GCN 
@@ -306,7 +300,7 @@ class BioGRN(nn.Module):
 
         self.cutoff = nn.Threshold(1.0e-9, 1.0e-9)
         if self.use_cuda:
-            self.to(device)
+            self.to(self.device)
     
    
     def model(self, XRNA, XATAC = None, adj = None, train_ids = None,train_y = None):
@@ -318,7 +312,7 @@ class BioGRN(nn.Module):
         :return: None
         """
         pyro.module('RNArecon', self)
-        XRNA = XRNA.to(device)   
+        XRNA = XRNA.to(self.device)   
         batch_size = XRNA.size(0) ## all genes
         options = dict(dtype=XRNA.dtype, device=XRNA.device)
         XGATembedding = self.GeneGRNEncoder(XRNA, adj) ## revise later, test whether to delete this variable # nhid
@@ -328,16 +322,16 @@ class BioGRN(nn.Module):
             ## zrna
             zrna_loc = torch.zeros(batch_size, self.ns, **options)
             zrna_scale = torch.ones(batch_size, self.ns, **options)
-            zrna = pyro.sample('zrna', dist.Normal(zrna_loc , zrna_scale).to_event(1)).to(device)
+            zrna = pyro.sample('zrna', dist.Normal(zrna_loc , zrna_scale).to_event(1)).to(self.device)
             ## zatac 
             zatac_loc = torch.zeros(batch_size, self.ns, **options)
             zatac_scale = torch.ones(batch_size, self.ns, **options)
-            zatac = pyro.sample('zatac', dist.Normal(zatac_loc, zatac_scale).to_event(1)).to(device)
+            zatac = pyro.sample('zatac', dist.Normal(zatac_loc, zatac_scale).to_event(1)).to(self.device)
             # ## zgrn based on GATGeneEncoder #nhid -> ns 
             zgrn_loc = torch.zeros(batch_size, self.ns, **options)
             zgrn_scale = torch.ones(batch_size, self.ns, **options)
             ## zgrn 
-            zgrn = pyro.sample('zgrn', dist.Normal(zgrn_loc, zgrn_scale).to_event(1)).to(device)
+            zgrn = pyro.sample('zgrn', dist.Normal(zgrn_loc, zgrn_scale).to_event(1)).to(self.device)
             # if need the diffusion layer， uncomment the next two lines 
             zgrn = torch.cat((XGATembedding, zgrn), dim=1)
             zgrn = F.relu(self.linear_s(zgrn))
@@ -345,7 +339,7 @@ class BioGRN(nn.Module):
             # zgrn is the embeddings after GAT and processed by VAE 
             ##rna decoder
             # thetas = self.decoder_RNA ([zrna, zatac, s]).to(device)
-            thetas = self.decoder_RNA ([zrna, zatac, zgrn]).to(device)
+            thetas = self.decoder_RNA ([zrna, zatac, zgrn]).to(self.device)
             thetas = self.cutoff(thetas)
             max_count = torch.ceil(abs(XRNA).sum(1).sum()).int().item()
             pyro.sample('XRNA', dist.DirichletMultinomial(total_count = max_count, concentration=thetas), obs=XRNA)
@@ -356,23 +350,25 @@ class BioGRN(nn.Module):
 
     def guide(self, XRNA, XATAC, adj = None,train_ids = None,train_y = None):
         ## post-distribution of VAE
-        XRNA = XRNA.to(device)
+        XRNA = XRNA.to(self.device)
+        XATAC= XATAC.to(self.device)
+        adj = adj.to(self.device)
         # XGATembedding = self.GeneGRNEncoder(XRNA, adj) # 共享 GAT 的 parameter
-        XGATembedding = self.GeneGRNEncoder_VAE(XRNA, adj) #不共享 GAT 的 parameter
+        XGATembedding = self.GeneGRNEncoder_VAE(XRNA, adj).to(self.device) #不共享 GAT 的 parameter
         with pyro.plate('data'):
             ## observed 
             ##rna -> gene_zran
             zrna_loc, zrna_scale = self.encoder_RNA(XRNA)
-            zrna = pyro.sample('zrna', dist.Normal(zrna_loc, zrna_scale).to_event(1))
+            zrna = pyro.sample('zrna', dist.Normal(zrna_loc, zrna_scale).to_event(1)).to(self.device)
 
             ##atac -> gene_zatac
             zatac_loc, zatac_scale = self.encoder_ATAC(XATAC)
-            zatac = pyro.sample('zatac', dist.Normal(zatac_loc, zatac_scale).to_event(1))
+            zatac = pyro.sample('zatac', dist.Normal(zatac_loc, zatac_scale).to_event(1)).to(self.device)
 
             ##GATenmbedding -> gene_zgrn
             ##atac -> zatac
             zgrn_loc, zgrn_scale = self.encoder_GAT(XGATembedding)
-            zgrn = pyro.sample('zgrn', dist.Normal(zgrn_loc, zgrn_scale).to_event(1))
+            zgrn = pyro.sample('zgrn', dist.Normal(zgrn_loc, zgrn_scale).to_event(1)).to(self.device)
 
     # def forward(self, XRNA, XATAC, adj, train_ids, stage=None, z_mean=None):
     #     z_mean, mu, logvar, z_sum, zgrn = self.GRNEncoder(XRNA, adj, stage)
@@ -389,8 +385,10 @@ class BioGRN(nn.Module):
         """
         # use the trained model q(y|x) = categorical(alpha(x))
         # compute all class probabilities for the cell(s)
-        XGATembedding = self.GeneGRNEncoder(XRNA, adj) 
-        XGATembedding2 = self.GeneGRNEncoder_VAE(XRNA, adj)
+        XRNA = XRNA.to(self.device)
+        adj = adj.to(self.device)
+        XGATembedding = self.GeneGRNEncoder(XRNA, adj).to(self.device) 
+        XGATembedding2 = self.GeneGRNEncoder_VAE(XRNA, adj).to(self.device)
         GeneEmbedding_GAT,_ = self.encoder_GAT(XGATembedding2)
         GeneEmbedding_GVAE = torch.cat((XGATembedding, GeneEmbedding_GAT), dim=1)
         GeneEmbedding_GVAE = F.relu(self.linear_s(GeneEmbedding_GVAE))
@@ -398,9 +396,9 @@ class BioGRN(nn.Module):
         Gene1 = GeneEmbedding_GVAE[train_ids[:, 0]]
         Gene2 = GeneEmbedding_GVAE[train_ids[:, 1]]
         X_edges = torch.cat([Gene1, Gene2], dim=1)
-        y_alpha = self.encoder_GRNedges(X_edges)
+        y_alpha = self.encoder_GRNedges(X_edges).to(self.device)
         res, ind = torch.topk(y_alpha, 1)
-        edge_y = torch.zeros_like(y_alpha).scatter_(1, ind, 1.0)
+        edge_y = torch.zeros_like(y_alpha).scatter_(1, ind, 1.0).to(self.device)
         return edge_y, y_alpha
     
     ## GRN recon
@@ -415,15 +413,15 @@ class BioGRN(nn.Module):
         # inform pyro that the variables in the batch of xs, ys are conditionally independent
         with pyro.plate('data'):
             # this here is the extra term to yield an auxiliary loss that we do gradient descent on
-                XGATembedding = self.GeneGRNEncoder(XRNA, adj) ## GAT
-                XGATembedding2 = self.GeneGRNEncoder_VAE(XRNA, adj)
+                XGATembedding = self.GeneGRNEncoder(XRNA, adj).to(self.device) ## GAT
+                XGATembedding2 = self.GeneGRNEncoder_VAE(XRNA, adj).to(self.device)
                 GeneEmbedding_GAT,_ = self.encoder_GAT(XGATembedding2) ## VAE_embedding based on GAT, using mean values instead of sampling
                 GeneEmbedding_GVAE = torch.cat((XGATembedding, GeneEmbedding_GAT), dim=1)
-                GeneEmbedding_GVAE = F.relu(self.linear_s(GeneEmbedding_GVAE))
+                GeneEmbedding_GVAE = F.relu(self.linear_s(GeneEmbedding_GVAE)).to(self.device)
                 Gene1 = GeneEmbedding_GVAE[train_ids[:, 0]]
                 Gene2 = GeneEmbedding_GVAE[train_ids[:, 1]]
                 X_edges = torch.cat([Gene1, Gene2], dim=1)
-                alpha_y = self.encoder_GRNedges(X_edges)
+                alpha_y = self.encoder_GRNedges(X_edges).to(self.device)
                 ## need the real label
                 with pyro.poutine.scale(scale = self.aux_loss_multiplier):
                     pyro.sample('train_y', dist.OneHotCategorical(alpha_y), obs = train_y)

@@ -17,6 +17,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import confusion_matrix
 from sklearn.preprocessing import LabelBinarizer
+import yaml
 
 def set_rng_seed(seed):
     random.seed(seed)
@@ -25,9 +26,11 @@ def set_rng_seed(seed):
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
-set_rng_seed(2222)
 
 
+def load_yaml_config(file_path):
+    with open(file_path, encoding='utf-8') as f:
+        return yaml.load(f, Loader=yaml.FullLoader)['VAE']
 
 def Get_metrics(predicted_y, y_prob, y_true):
     correct_prediction = torch.eq(torch.topk(predicted_y, 1)[1].squeeze(), y_true)
