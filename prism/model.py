@@ -668,3 +668,237 @@ class PRISM_UP(nn.Module):
         dummy guide function to accompany model_classify in inference
         """
         pass
+    
+    
+    
+class PRISM_UP(nn.Module):
+    def __init__(self,
+                 nfeat = None,  ## cell num
+                 nfeat_atac = None, ## unpaired ATAC
+                 nhid = None,   ## hidden size
+                 ns = None,     ## GAT -> VAE size
+                #  hidden_layers = [50],
+                ## default setting
+                 dropout = 0.1,
+                 alpha = 0.35,
+                 flag = True, 
+                 config_enum = "parallel",
+                 use_cuda = True,
+                 aux_loss_multiplier = 1, ## hyperparameter
+    ):
+        super().__init__()    
+        ## input parameters
+        self.nfeat = nfeat
+        self.nfeat_atac = nfeat_atac
+        self.nhid = nhid  ## VAE hidden TF_number
+        self.ns = ns    ## gene embeddung
+
+        ##defalt parameters
+        self.use_cuda = use_cuda
+        if self.use_cuda:
+            self.device = torch.device("cuda:0")
+        else:
+            self.device = torch.device("cpu")
+        self.allow_broadcast = config_enum 
+        self.aux_loss_multiplier = aux_loss_multiplier
+        ## predicting GRN edge based on gene embeddings
+        if flag:
+            self.ny = 3
+        else:
+            self.ny = 2
+        self.edgeLinear = nn.Linear(self.nhid, self.ny)
+        ## GAT for gene embedding 
+        self.linear_s = nn.Linear(nhid + ns, ns)
+        self.GeneGRNEncoder = GraphAttentionLayer(nfeat, nhid, dropout=dropout, alpha=alpha, concat=True)
+
+        self.GeneGRNEncoder_VAE = GraphAttentionLayer(nfeat, nhid, dropout=dropout, alpha=alpha, concat=True) ## revised later 
+
+        self.GRNDecoder = GCN(nfeat, ns, nhid, dropout, flag)
+
+
+        ## VAE encoders/decoders
+        self.setup_networks()
+    
+
+    ## VAE networks
+    def setup_networks(self):
+        ## encoders
+        ## rp score -> hidden -> gene embedding
+        self.encoder_ATAC = MLP(
+            [self.nfeat_atac] + [self.nhid] + [[self.ns, self.ns]],
+            activation = nn.Softplus,
+            output_activation = [None, Exp],
+            allow_broadcast = self.allow_broadcast,
+            use_cuda = self.use_cuda,
+        )
+
+        ## rna -> hidden -> gene embedding 
+        self.encoder_RNA = MLP(
+            [self.nfeat] + [self.nhid] + [[self.ns, self.ns]],
+            activation = nn.Softplus,
+            output_activation = [None, Exp],
+            allow_broadcast = self.allow_broadcast,
+            use_cuda = self.use_cuda,
+        )
+        ## GATgene encoder -> hidden -> GATVAE embedding
+        self.encoder_GAT = MLP(
+            [self.nhid] + [self.nhid] + [[self.ns, self.ns]],
+            activation = nn.Softplus,
+            output_activation = [None, Exp],
+            allow_broadcast = self.allow_broadcast,
+            use_cuda = self.use_cuda,
+        )
+        
+        ## directly produce y based on the paired gene embeddings (2 * ns) VAE-based ONEHOT CATEGORIAL DIST 
+
+        self.encoder_GRNedges = MLP(
+            [self.ns * 2] + [self.nhid] + [self.ny],
+            activation = nn.Softplus,
+            output_activation = nn.Softmax,
+            allow_broadcast = self.allow_broadcast,
+            use_cuda = self.use_cuda,
+        )
+        
+        ## decoders
+        ## expression recon
+        ## expression gene embedding + rp gene embedding + GCN embedding -> expression 
+        self.decoder_RNA = MLP( 
+            [self.ns + self.ns + self.ns ] + [self.nhid] + [self.nfeat],
+            activation = nn.Softplus,
+            output_activation = nn.Sigmoid,
+            allow_broadcast = self.allow_broadcast,
+            use_cuda = self.use_cuda,
+        )
+
+        self.cutoff = nn.Threshold(1.0e-9, 1.0e-9)
+        if self.use_cuda:
+            self.to(self.device)
+    
+   
+    def model(self, XRNA, XATAC = None, adj = None, train_ids = None,train_y = None):
+        """
+        The model corresponds to the following generative process:		
+	    the prior distribution
+        θ= decoder_θ(zrna, zatac, zgrn)	
+        X ~ Multinomial(θ)  
+        :return: None
+        """
+        pyro.module('RNArecon', self)
+        XRNA = XRNA.to(self.device)   
+        batch_size = XRNA.size(0) ## all genes
+        options = dict(dtype=XRNA.dtype, device=XRNA.device)
+        XGATembedding = self.GeneGRNEncoder(XRNA, adj) ## revise later, test whether to delete this variable # nhid
+
+        with pyro.plate('data'):
+            # prior initialize
+            ## zrna
+            zrna_loc = torch.zeros(batch_size, self.ns, **options)
+            zrna_scale = torch.ones(batch_size, self.ns, **options)
+            zrna = pyro.sample('zrna', dist.Normal(zrna_loc , zrna_scale).to_event(1)).to(self.device)
+            ## zatac 
+            zatac_loc = torch.zeros(batch_size, self.ns, **options)
+            zatac_scale = torch.ones(batch_size, self.ns, **options)
+            zatac = pyro.sample('zatac', dist.Normal(zatac_loc, zatac_scale).to_event(1)).to(self.device)
+            # ## zgrn based on GATGeneEncoder #nhid -> ns 
+            zgrn_loc = torch.zeros(batch_size, self.ns, **options)
+            zgrn_scale = torch.ones(batch_size, self.ns, **options)
+            ## zgrn 
+            zgrn = pyro.sample('zgrn', dist.Normal(zgrn_loc, zgrn_scale).to_event(1)).to(self.device)
+            # if need the diffusion layer， uncomment the next two lines 
+            zgrn = torch.cat((XGATembedding, zgrn), dim=1)
+            zgrn = F.relu(self.linear_s(zgrn))
+            ## zgrn for directly encode by GRNEncoder
+            # zgrn is the embeddings after GAT and processed by VAE 
+            ##rna decoder
+            # thetas = self.decoder_RNA ([zrna, zatac, s]).to(device)
+            thetas = self.decoder_RNA ([zrna, zatac, zgrn]).to(self.device)
+            thetas = self.cutoff(thetas)
+            max_count = torch.ceil(abs(XRNA).sum(1).sum()).int().item()
+            pyro.sample('XRNA', dist.DirichletMultinomial(total_count = max_count, concentration=thetas), obs=XRNA)
+            
+        # ## GRN decoder
+        # recon_GRN = self.GRNDecoder(zgrn, XRNA, adj, train_ids)
+        # return z_mean, mu, logvar, z_sum, recon_GRN 
+
+    def guide(self, XRNA, XATAC, adj = None,train_ids = None,train_y = None):
+        ## post-distribution of VAE
+        XRNA = XRNA.to(self.device)
+        # XGATembedding = self.GeneGRNEncoder(XRNA, adj) # 共享 GAT 的 parameter
+        XGATembedding = self.GeneGRNEncoder_VAE(XRNA, adj) #不共享 GAT 的 parameter
+        with pyro.plate('data'):
+            ## observed 
+            ##rna -> gene_zran
+            zrna_loc, zrna_scale = self.encoder_RNA(XRNA)
+            zrna = pyro.sample('zrna', dist.Normal(zrna_loc, zrna_scale).to_event(1))
+
+            ##atac -> gene_zatac
+            zatac_loc, zatac_scale = self.encoder_ATAC(XATAC)
+            zatac = pyro.sample('zatac', dist.Normal(zatac_loc, zatac_scale).to_event(1))
+
+            ##GATenmbedding -> gene_zgrn
+            ##atac -> zatac
+            zgrn_loc, zgrn_scale = self.encoder_GAT(XGATembedding)
+            zgrn = pyro.sample('zgrn', dist.Normal(zgrn_loc, zgrn_scale).to_event(1))
+
+    # def forward(self, XRNA, XATAC, adj, train_ids, stage=None, z_mean=None):
+    #     z_mean, mu, logvar, z_sum, zgrn = self.GRNEncoder(XRNA, adj, stage)
+    #     recon_GRN = self.GRNDecoder(zgrn, XRNA, adj, train_ids)
+    #     return z_mean, mu, logvar, z_sum, recon_GRN
+
+    def classifier(self, XRNA, adj, train_ids):
+        """
+        classify a cell (or a batch of cells)
+
+        :param xs: a batch of vectors of gene counts from a cell
+        :return: a batch of the corresponding class labels (as one-hots)
+                 along with the class probabilities
+        """
+        # use the trained model q(y|x) = categorical(alpha(x))
+        # compute all class probabilities for the cell(s)
+        XGATembedding = self.GeneGRNEncoder(XRNA, adj) 
+        XGATembedding2 = self.GeneGRNEncoder_VAE(XRNA, adj)
+        GeneEmbedding_GAT,_ = self.encoder_GAT(XGATembedding2)
+        GeneEmbedding_GVAE = torch.cat((XGATembedding, GeneEmbedding_GAT), dim=1)
+        GeneEmbedding_GVAE = F.relu(self.linear_s(GeneEmbedding_GVAE))
+
+        Gene1 = GeneEmbedding_GVAE[train_ids[:, 0]]
+        Gene2 = GeneEmbedding_GVAE[train_ids[:, 1]]
+        X_edges = torch.cat([Gene1, Gene2], dim=1)
+        y_alpha = self.encoder_GRNedges(X_edges)
+        res, ind = torch.topk(y_alpha, 1)
+        edge_y = torch.zeros_like(y_alpha).scatter_(1, ind, 1.0)
+        return edge_y, y_alpha
+    
+    ## GRN recon
+    def model_GRNrecon(self, XRNA, XATAC = None, adj = None, train_ids = None, train_y = None):
+        """
+        this model is used to add auxiliary (supervised) loss as described in the
+        Kingma et al., "Supervised Learning with Deep Generative Models".
+        """
+        # register all pytorch (sub)modules with pyro
+        pyro.module('GRNrecon', self)
+    
+        # inform pyro that the variables in the batch of xs, ys are conditionally independent
+        with pyro.plate('data'):
+            # this here is the extra term to yield an auxiliary loss that we do gradient descent on
+                XGATembedding = self.GeneGRNEncoder(XRNA, adj) ## GAT
+                XGATembedding2 = self.GeneGRNEncoder_VAE(XRNA, adj)
+                GeneEmbedding_GAT,_ = self.encoder_GAT(XGATembedding2) ## VAE_embedding based on GAT, using mean values instead of sampling
+                GeneEmbedding_GVAE = torch.cat((XGATembedding, GeneEmbedding_GAT), dim=1)
+                GeneEmbedding_GVAE = F.relu(self.linear_s(GeneEmbedding_GVAE))
+                Gene1 = GeneEmbedding_GVAE[train_ids[:, 0]]
+                Gene2 = GeneEmbedding_GVAE[train_ids[:, 1]]
+                X_edges = torch.cat([Gene1, Gene2], dim=1)
+                alpha_y = self.encoder_GRNedges(X_edges)
+                ## need the real label
+                with pyro.poutine.scale(scale = self.aux_loss_multiplier):
+                    pyro.sample('train_y', dist.OneHotCategorical(alpha_y), obs = train_y)
+            
+
+    def guide_GRNrecon(self, XRNA, XATAC = None, adj = None, train_ids = None, train_y = None):
+        
+        """
+        Additional classification and none inference steps are included
+        dummy guide function to accompany model_classify in inference
+        """
+        pass
