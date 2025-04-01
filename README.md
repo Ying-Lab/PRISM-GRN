@@ -2,6 +2,11 @@
 A Probabilistic Bayesian Model to Recover Gene Regulatory Networks by Incorporating a Biologically Interpretable Structure based on single-cell Multi-Omics Data
 ![The framework of PRISM](https://github.com/Ying-Lab/PRISM/blob/main/Figure1.jpg)
 
+Prerequisites
+-----
+
+- >=Python 3.8.10
+
 Installation
 -----
 
