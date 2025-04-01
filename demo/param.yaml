@@ -10,3 +10,4 @@ VAE:
   dropout: 0.1
   ns: 64
   alpha: 0.35
+  pairing: True

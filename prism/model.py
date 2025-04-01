@@ -8,8 +8,8 @@ import torch.nn.functional as F
 import torch
 import torch.nn as nn
 # import prism
-from prism.layer import MLP, Exp, ExpM
-from prism.layer import GraphConvolution, GraphAttentionLayer
+from layer import MLP, Exp, ExpM
+from layer import GraphConvolution, GraphAttentionLayer
 torch.set_default_tensor_type(torch.FloatTensor)
 
 
@@ -235,14 +235,13 @@ class PRISM(nn.Module):
         ## GAT for gene embedding 
         self.linear_s = nn.Linear(nhid + ns, ns)
         self.GeneGRNEncoder = GraphAttentionLayer(nfeat, nhid, dropout=dropout, alpha=alpha, concat=True)
-        self.GeneGRNEncoder_VAE = GraphAttentionLayer(nfeat, nhid, dropout=dropout, alpha=alpha, concat=True) ## revised later 
+        self.GeneGRNEncoder_VAE = GraphAttentionLayer(nfeat, nhid, dropout=dropout, alpha=alpha, concat=True) 
         ## Recon GRN 
         #choice 1: directly based on the trained embeddings from GCN 
         #if this choice, deposit in the VAE networks 
         #choice 2：create another GCN/GAT based on the graph and the features(trained/initial) test later
-        self.GRNDecoder = GCN(nfeat, ns, nhid, dropout, flag)
+        # self.GRNDecoder = GCN(nfeat, ns, nhid, dropout, flag)
         # self.GRNDecoder = GAT(nfeat, nhid, dropout, alpha, nheads, ns, flag)
-
 
         ## VAE encoders/decoders
         self.setup_networks()
@@ -311,7 +310,7 @@ class PRISM(nn.Module):
         X ~ Multinomial(θ)  
         :return: None
         """
-        pyro.module('RNArecon', self)
+        pyro.module('PRISM', self)
         XRNA = XRNA.to(self.device)   
         batch_size = XRNA.size(0) ## all genes
         options = dict(dtype=XRNA.dtype, device=XRNA.device)
@@ -338,7 +337,6 @@ class PRISM(nn.Module):
             ## zgrn for directly encode by GRNEncoder
             # zgrn is the embeddings after GAT and processed by VAE 
             ##rna decoder
-            # thetas = self.decoder_RNA ([zrna, zatac, s]).to(device)
             thetas = self.decoder_RNA ([zrna, zatac, zgrn]).to(self.device)
             thetas = self.cutoff(thetas)
             max_count = torch.ceil(abs(XRNA).sum(1).sum()).int().item()
@@ -348,13 +346,13 @@ class PRISM(nn.Module):
         # recon_GRN = self.GRNDecoder(zgrn, XRNA, adj, train_ids)
         # return z_mean, mu, logvar, z_sum, recon_GRN 
 
-    def guide(self, XRNA, XATAC, adj = None,train_ids = None,train_y = None):
+    def guide(self, XRNA, XATAC, adj ,train_ids = None,train_y = None):
         ## post-distribution of VAE
         XRNA = XRNA.to(self.device)
         XATAC= XATAC.to(self.device)
         adj = adj.to(self.device)
-        # XGATembedding = self.GeneGRNEncoder(XRNA, adj) # 共享 GAT 的 parameter
-        XGATembedding = self.GeneGRNEncoder_VAE(XRNA, adj).to(self.device) #不共享 GAT 的 parameter
+        # XGATembedding = self.GeneGRNEncoder(XRNA, adj)
+        XGATembedding = self.GeneGRNEncoder_VAE(XRNA, adj).to(self.device)
         with pyro.plate('data'):
             ## observed 
             ##rna -> gene_zran
@@ -370,10 +368,7 @@ class PRISM(nn.Module):
             zgrn_loc, zgrn_scale = self.encoder_GAT(XGATembedding)
             zgrn = pyro.sample('zgrn', dist.Normal(zgrn_loc, zgrn_scale).to_event(1)).to(self.device)
 
-    # def forward(self, XRNA, XATAC, adj, train_ids, stage=None, z_mean=None):
-    #     z_mean, mu, logvar, z_sum, zgrn = self.GRNEncoder(XRNA, adj, stage)
-    #     recon_GRN = self.GRNDecoder(zgrn, XRNA, adj, train_ids)
-    #     return z_mean, mu, logvar, z_sum, recon_GRN
+
 
     def classifier(self, XRNA, adj, train_ids):
         """

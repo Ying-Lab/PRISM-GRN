@@ -725,9 +725,9 @@ def plot_confusion_matrix(probabilities, true_labels, class_names):
 
 def load_sc_data_clean(data_path1, data_path2, label_path):
     label_file = pd.read_csv(label_path, header = 0, sep = ",")
-    data = pd.read_csv(data_path1, header = 0, index_col = 0).T ## cell * gene 
+    data = pd.read_csv(data_path1, header = 0, index_col = 0).T ## transform to cell * gene 
     data = data.transform(lambda x: np.log(x + 1))
-    data_atac = pd.read_csv(data_path2, header = 0, index_col = 0).T ## cell * gene
+    data_atac = pd.read_csv(data_path2, header = 0, index_col = 0).T ## transform to cell * gene
 
     u = []
     v = []
@@ -821,43 +821,71 @@ def load_sc_data_clean(data_path1, data_path2, label_path):
     train_labels = torch.FloatTensor(train_labels)
 
     # return adj_train, features, features_atac, train_ids, val_ids, test_ids, train_labels, val_labels, test_labels
-    return adj_train, features, features_atac, train_ids, test_ids, train_labels, 
+    return adj_train, features, features_atac, train_ids, test_ids, train_labels
 
+def load_sc_causal_data_clean(data_path1, data_path2, label_path):
+    if data_path1.split(".")[-1] == "h5":
+        store = pd.HDFStore(data_path1)
+        data = store['RPKMs']
+        store.close()
 
+        ##preprocess the raw expression data
+        cellinfo = pd.DataFrame(data.index,index=data.index,columns=['sample_index'])
+        geneinfo = pd.DataFrame(data.columns,index=data.columns,columns=['gene_index'])
+        adata = sc.AnnData(data.values, obs = cellinfo, var = geneinfo)
+        sc.pp.filter_cells(adata, min_genes = 200)
+        sc.pp.filter_genes(adata, min_cells = 100)
+        data = pd.DataFrame(adata.X, index = adata.obs.index, columns = adata.var.index)
+        # 
+        ##filter genes using sc_gene_list
+        # gene_list = pd.read_csv("~/src_codes/CNNC-master/data/sc_gene_list.txt", sep = "\s+", header = None)
+        # data = data[gene_list[1]][:]
 
-def load_sc_data_hardsplit(data_path1, data_path2, label_path):
-    label_file = pd.read_csv(label_path, header = 0, sep = ",")
-    data = pd.read_csv(data_path1, header = 0, index_col = 0).T ## cell * gene 
+        label_file = pd.read_csv(label_path, header = None, sep = "\t")
+        print("read data complete!")
+    else:
+        label_file = pd.read_csv(label_path, header = 0, sep = ",")
+        data = pd.read_csv(data_path1, header = 0, index_col = 0).T
+        data_atac = pd.read_csv(data_path2, header = 0, index_col = 0).T ## cell * gene
+        print("read data complete!")
+    
     data = data.transform(lambda x: np.log(x + 1))
-    data_atac = pd.read_csv(data_path2, header = 0, index_col = 0).T ## cell * gene
+    print("log the expression data")
 
     u = []
     v = []
-    var_names = list(data.columns) # genes
-    ## locate gene index for TF-gene 
-    for row_index, row in label_file.iterrows(): 
+    d = []
+    var_names = list(data.columns)
+    for row_index, row in label_file.iterrows():
         u.append(var_names.index(row[0]))
         v.append(var_names.index(row[1]))
-    # gene1 index list
+        d.append(1)
+
+        u.append(var_names.index(row[1]))
+        v.append(var_names.index(row[0]))
+        d.append(2)
+
+    print("process the ground truth!")
+
     u = np.array(u)
     u = torch.LongTensor(u)
-    # gene2 index list
     v = np.array(v)
     v = torch.LongTensor(v)
-    ## permutate
-    eids = np.arange(label_file.shape[0])
-    eids = np.random.permutation(eids)
-    # split data
-    test_size = 0
-    val_size = int(len(eids) * 0.1)
-    train_size = label_file.shape[0] - test_size - val_size
-    
-    test_pos_u, test_pos_v = u[eids[:test_size]], v[eids[:test_size]]
-    val_pos_u, val_pos_v = u[eids[test_size:(test_size + val_size)]], v[eids[test_size:(test_size + val_size)]]
-    train_pos_u, train_pos_v = u[eids[(test_size + val_size):]], v[eids[(test_size + val_size):]]
+    d = np.array(d)
+    d = torch.LongTensor(d)
 
-    #find all negative edges and split them for training and testing 
-    #the edges those not supported by ChIP-seq are negative
+    eids = np.arange(len(u))
+    eids = np.random.permutation(eids)
+
+    # all prior edges are used for training 
+    test_size = 0
+    val_size = 0
+    train_size = label_file.shape[0] 
+
+    test_pos_u, test_pos_v, test_pos_d = u[eids[:test_size]], v[eids[:test_size]], d[eids[:test_size]]
+    train_pos_u, train_pos_v, train_pos_d = u[eids[(test_size + val_size):]], v[eids[(test_size + val_size):]], d[eids[(test_size + val_size):]]
+
+    #find all negative edges and split them for training and testing
     graph = dgl.graph((u, v), num_nodes = len(var_names))
     
     adj = sp.coo_matrix((np.ones(u.shape), (u, v)),
@@ -866,73 +894,68 @@ def load_sc_data_hardsplit(data_path1, data_path2, label_path):
     #adj = graph.adj(scipy_fmt = 'coo')
     adj_neg = 1 - adj.todense() - np.eye(len(var_names))
     neg_u, neg_v = np.where(adj_neg != 0)
+    print("find all negative edges and split them for training and testing!")
 
     ##For 1:1 Pos-Neg
     # neg_eids = np.random.choice(len(neg_u), label_file.shape[0])
     # 
     ##For 1:All Pos-Neg
-    ##  split negative ones
     neg_eids = np.arange(len(neg_u))
     np.random.shuffle(neg_eids)
-
-    test_neg_size = 0
-    val_neg_size = int(len(neg_eids) * 0.1)
-    train_neg_size = neg_eids.shape[0] - test_neg_size - val_neg_size
+    # balanced 
+    train_neg_size = train_size
+    test_neg_size = neg_eids.shape[0] - train_neg_size 
 
     test_neg_u, test_neg_v = (
         neg_u[neg_eids[:test_neg_size]],
         neg_v[neg_eids[:test_neg_size]],
     )
-    val_neg_u, val_neg_v = (
-        neg_u[neg_eids[test_neg_size:(test_neg_size + val_neg_size)]],
-        neg_v[neg_eids[test_neg_size:(test_neg_size + val_neg_size)]],
-    )
+
     train_neg_u, train_neg_v = (
-        neg_u[neg_eids[(test_neg_size + val_neg_size):]],
-        neg_v[neg_eids[(test_neg_size + val_neg_size):]],
+        neg_u[neg_eids[test_neg_size:]],
+        neg_v[neg_eids[test_neg_size:]],
     )
 
     train_u = np.concatenate((train_pos_u, train_neg_u), axis = 0)
     train_v = np.concatenate((train_pos_v, train_neg_v), axis = 0)
 
-    val_u = np.concatenate((val_pos_u, val_neg_u), axis = 0)
-    val_v = np.concatenate((val_pos_v, val_neg_v), axis = 0)
 
     test_u = np.concatenate((test_pos_u, test_neg_u), axis = 0)
     test_v = np.concatenate((test_pos_v, test_neg_v), axis = 0)
 
     #Create train and test mask
     train_ids = np.stack((train_u, train_v), axis = 1)
-    train_labels = np.concatenate([np.ones(train_pos_u.shape[0]), np.zeros(train_neg_u.shape[0])], axis = 0)
+    train_labels = np.concatenate([train_pos_d, np.zeros([train_neg_u.shape[0]])], axis = 0)
+    ## test are all unknown edges, without labels
+    test_ids = np.stack((test_u, test_v), axis = 1)
 
-    val_ids = np.stack((val_u, val_v), axis = 1)
-    val_labels = np.concatenate([np.ones(val_pos_u.shape[0]), np.zeros(val_neg_u.shape[0])], axis = 0)
 
-    # test_ids = np.stack((test_u, test_v), axis = 1)
-    # test_labels = np.concatenate([np.ones(test_pos_u.shape[0]), np.zeros(test_neg_u.shape[0])], axis = 0)
-
-    ## the prior graph is spliited corresponding to the splited sets
+    
     train_g = dgl.remove_edges(graph, eids[:(test_size + val_size)])
     # val_g = dgl.graph((val_pos_u, val_pos_v), num_nodes = len(var_names))
     # test_g = dgl.remove_edges(graph, eids[test_size:])
     adj_train = train_g.adj(scipy_fmt = 'coo')
-
-
-    features = data.T.values ##  gene * cell
-    features = normalize_features(features) ## normalize per gene
-    features = torch.FloatTensor(features) 
-
+    ## gene expression
+    features = data.T.values
+    features = normalize_features(features)
+    features = torch.FloatTensor(features)
+    ## atac gene score
     features_atac = data_atac.T.values ##  gene * cell
     features_atac = normalize_features(features_atac) ## normalize per gene
     features_atac = torch.FloatTensor(features_atac) 
 
+    train_eids = np.arange(len(train_labels))
+    np.random.shuffle(train_eids)
+    train_ids = train_ids[train_eids]
+    train_labels = train_labels[train_eids]
     #Convert the matrix to torch sparse tensor
     adj_train = sparse_mx_to_torch_sparse_tensor(adj_train)
     train_ids = torch.LongTensor(train_ids)
     val_ids = torch.LongTensor(val_ids)
-    # test_ids = torch.LongTensor(test_ids)
-    train_labels = torch.FloatTensor(train_labels)
-    val_labels = torch.FloatTensor(val_labels)
-    # test_labels = torch.FloatTensor(test_labels)
+    test_ids = torch.LongTensor(test_ids)
+    train_labels = torch.LongTensor(train_labels)
+    val_labels = torch.LongTensor(val_labels)
+    test_labels = torch.LongTensor(test_labels)
 
-    return adj_train, features, features_atac, train_ids, val_ids, train_labels, val_labels
+    return adj_train, features, features_atac, train_ids, test_ids, train_labels
+
