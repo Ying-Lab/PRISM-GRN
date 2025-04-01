@@ -5,7 +5,7 @@ A Probabilistic Bayesian Model to Recover Gene Regulatory Networks by Incorporat
 Prerequisites
 -----
 
-- >=Python 3.8.10
+- Python 3.8.10
 
 Installation
 -----
