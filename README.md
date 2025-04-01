@@ -24,9 +24,13 @@ pip install prism-grn
 Parameters
 -----
 flag: different tasks, True is causality prediction; False is undirected GRN reconstruction. Default is True.
+
 cuda: Whether using GPU. Default is True.
+
 epoch: Training epoches. Default is 2000.
+
 lr: Initial learning rate. Default is 0.0003
+
 
 Example
 -----
