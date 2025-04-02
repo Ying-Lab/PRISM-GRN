@@ -8,8 +8,8 @@ import torch.nn.functional as F
 import torch
 import torch.nn as nn
 # import prism
-from layer import MLP, Exp, ExpM
-from layer import GraphConvolution, GraphAttentionLayer
+from prism.layer import MLP, Exp, ExpM
+from prism.layer import GraphConvolution, GraphAttentionLayer
 torch.set_default_tensor_type(torch.FloatTensor)
 
 

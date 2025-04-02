@@ -1,114 +1,57 @@
-#!/usr/bin/env python
-# coding:utf-8
-
-# from setuptools import find_packages, setup
-# # from setuptools import find_packages, setup, Command
-
-# setup(
-#     name='PRISM',
-#     version='1.0',
-#     description='A doublet detetion tool for scCAS data',
-#     long_description=open('README.rst').read(),
-#     author='Wenhao Zhang',
-#     author_email='23220210156258@stu.xmu.edu.cn',
-#     maintainer='Wenhao Zhang',
-#     maintainer_email='23220210156258@stu.xmu.edu.cn',
-#     packages=find_packages(),
-# #     install_requires = [
-# #     "annoy~=1.17.0",
-# #     "matplotlib~=3.5.1",
-# #     "numpy~=1.22.4",
-# #     "pandas~=1.3.1",
-# #     "psutil~=5.8.0",
-# #     "scanpy~=1.9.1",
-# #     "scikit_bio~=0.5.8",
-# #     "scikit_learn~=1.2.0",
-# #     "scipy~=1.7.1",
-# #     "seaborn~=0.11.1",
-# #     "umap_learn~=0.5.1",
-# #     ],
-#     platforms=["all"],
-#     url='https://github.com/Ying-Lab/PRISM/',
-#     license='MIT',
-#     classifiers=[
-#         'Development Status :: 4 - Beta',
-#         'Operating System :: OS Independent',
-#         'Intended Audience :: Developers',
-#         'License :: OSI Approved :: MIT License',
-#         'Programming Language :: Python',
-#         'Programming Language :: Python :: 3.8',
-#         'Programming Language :: Python :: Implementation :: CPython',
-#         'Programming Language :: Python :: Implementation :: PyPy'
-#     ],
-# )
-
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-
-# Note: To use the 'upload' functionality of this file, you must:
-#   $ pipenv install twine --dev
-
 import io
 import os
 import sys
 from shutil import rmtree
-
 from setuptools import find_packages, setup, Command
 
 # Package meta-data.
 NAME = 'prism_grn'
-DESCRIPTION = 'A Probabilistic Model for Recover GRNs with Multi-Omics Data https://github.com/Ying-Lab/PRISM'
+DESCRIPTION = 'A Probabilistic Model for Recovering GRNs based on Multi-Omics Data'
 URL = 'https://github.com/Ying-Lab/PRISM/'
 EMAIL = 'zscotty@stu.xmu.edu.cn'
 AUTHOR = 'Wenhao Zhang'
-REQUIRES_PYTHON = '>=3.8.0'
+REQUIRES_PYTHON = '>=3.8.10'
 VERSION = '1.2.0'
 
-# What packages are required for this module to be executed?
+# Required packages
 REQUIRED = [
-    # 'requests', 'maya', 'records',
+    'torch==1.11.0',
+    'pyro-ppl==1.7.0',
+    'networkx==3.1',
+    'numpy==1.24.4',
+    'scipy==1.10.1',
+    'pandas==2.0.3'
 ]
 
-# What packages are optional?
+# Optional dependencies
 EXTRAS = {
-    # 'fancy feature': ['django'],
+    'dev': ['pytest', 'black', 'flake8'],
 }
-
-# The rest you shouldn't have to touch too much :)
-# ------------------------------------------------
-# Except, perhaps the License and Trove Classifiers!
-# If you do change the License, remember to change the Trove Classifier for that!
 
 here = os.path.abspath(os.path.dirname(__file__))
 
-# Import the README and use it as the long-description.
-# Note: this will only work if 'README.md' is present in your MANIFEST.in file!
+# Read README.md for long_description
 try:
     with io.open(os.path.join(here, 'README.md'), encoding='utf-8') as f:
         long_description = '\n' + f.read()
 except FileNotFoundError:
     long_description = DESCRIPTION
 
-# Load the package's __version__.py module as a dictionary.
-about = {}
+# Version handling
+about = {'__version__': VERSION} if VERSION else {}
 if not VERSION:
-    project_slug = NAME.lower().replace("-", "_").replace(" ", "_")
-    with open(os.path.join(here, project_slug, '__version__.py')) as f:
+    with open(os.path.join(here, NAME.replace("-", "_"), '__version__.py')) as f:
         exec(f.read(), about)
-else:
-    about['__version__'] = VERSION
-
 
 class UploadCommand(Command):
     """Support setup.py upload."""
-
     description = 'Build and publish the package.'
     user_options = []
 
     @staticmethod
     def status(s):
-        """Prints things in bold."""
-        print('\033[1m{0}\033[0m'.format(s))
+        """Prints messages in bold."""
+        print(f'\033[1m{s}\033[0m')
 
     def initialize_options(self):
         pass
@@ -123,20 +66,19 @@ class UploadCommand(Command):
         except OSError:
             pass
 
-        self.status('Building Source and Wheel (universal) distribution…')
-        os.system('{0} setup.py sdist bdist_wheel --universal'.format(sys.executable))
+        self.status('Building Source and Wheel distribution…')
+        os.system(f'{sys.executable} setup.py sdist bdist_wheel')
 
         self.status('Uploading the package to PyPI via Twine…')
         os.system('twine upload dist/*')
 
         self.status('Pushing git tags…')
-        os.system('git tag v{0}'.format(about['__version__']))
+        os.system(f'git tag v{about["__version__"]}')
         os.system('git push --tags')
 
         sys.exit()
 
-
-# Where the magic happens:
+# Package setup
 setup(
     name=NAME,
     version=about['__version__'],
@@ -147,30 +89,20 @@ setup(
     author_email=EMAIL,
     python_requires=REQUIRES_PYTHON,
     url=URL,
-    packages=find_packages(exclude=["tests", "*.tests", "*.tests.*", "tests.*"]),
-    # If your package is a single module, use this instead of 'packages':
-    # py_modules=['mypackage'],
-
-    # entry_points={
-    #     'console_scripts': ['mycli=mymodule:cli'],
-    # },
+    packages=find_packages(include=['prism', 'prism.*']),
     install_requires=REQUIRED,
     extras_require=EXTRAS,
     include_package_data=True,
-    license= "MIT",
+    license="MIT",
     classifiers=[
-        # Trove classifiers
-        # Full list: https://pypi.python.org/pypi?%3Aaction=list_classifiers
         'License :: OSI Approved :: MIT License',
-        'Programming Language :: Python',
         'Programming Language :: Python :: 3',
         'Programming Language :: Python :: 3.8',
+        'Programming Language :: Python :: 3.9',
         'Programming Language :: Python :: Implementation :: CPython',
-        'Programming Language :: Python :: Implementation :: PyPy'
+        'Programming Language :: Python :: Implementation :: PyPy',
     ],
-    # $ setup.py publish support.
     cmdclass={
         'upload': UploadCommand,
     },
 )
-

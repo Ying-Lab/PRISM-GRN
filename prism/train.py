@@ -18,11 +18,11 @@ import torch.utils.data as Data
 import scanpy as sc
 
 # import utils
-import model
-from utils import set_rng_seed
-from utils import load_yaml_config
-from utils import load_sc_data, load_sc_causal_data
-from utils import load_sc_data_clean, load_sc_causal_data_clean
+import prism.model as model
+from prism.utils import set_rng_seed
+from prism.utils import load_yaml_config
+from prism.utils import load_sc_data, load_sc_causal_data
+from prism.utils import load_sc_data_clean, load_sc_causal_data_clean
 
 ## set random seed
 
@@ -166,14 +166,14 @@ class Trainer:
 
             print(f'On test set, Accuracy is {test_acc}, AUROC is {test_AUC}, AUPRC is {test_AUPRC}.')
 
-    def GRN_Reconstruct(self):
+    def Get_GRN(self):
         """执行测试评估"""
         with torch.no_grad():
             test_y, test_y_prob = self.scc.classifier(self.feature, self.adj_train, self.test_ids)
             test_set = pd.DataFrame(self.test_ids.cpu().numpy(),columns=['Gene1','Gene2'])
             test_set['Gene1'] = self.genes[test_set['Gene1'].values]
             test_set['Gene2'] = self.genes[test_set['Gene2'].values]
-            if self.arg['flag']:  
+            if self.args['flag']:  
                 test_set['Prob_0'] = test_y_prob.detach().cpu().numpy()[:,0]
                 test_set['Prob_1'] = test_y_prob.detach().cpu().numpy()[:,1]
                 test_set['Prob_2'] = test_y_prob.detach().cpu().numpy()[:,2]
@@ -245,19 +245,14 @@ class Trainer_allprior:
     def load_data(self, Expression_data_path, Genescore_data_path, label_path):
         """加载数据并转换格式"""
         if self.args['flag']:
-            self.adj_train, self.feature, self.feature_atac, self.train_ids, self.val_ids, self.test_ids, \
-            self.train_labels, self.val_labels, self.test_labels = load_sc_causal_data_clean(Expression_data_path, Genescore_data_path, label_path)
+            self.adj_train, self.feature, self.feature_atac, self.train_ids,  self.test_ids, \
+            self.train_labels = load_sc_causal_data_clean(Expression_data_path, Genescore_data_path, label_path)
         else:
-            self.adj_train, self.feature, self.feature_atac, self.train_ids, self.val_ids, self.test_ids, \
-            self.train_labels, self.val_labels, self.test_labels = load_sc_data_clean(Expression_data_path, Genescore_data_path, label_path)
+            self.adj_train, self.feature, self.feature_atac, self.train_ids, self.test_ids, \
+            self.train_labels = load_sc_data_clean(Expression_data_path, Genescore_data_path, label_path)
 
         self.train_labels = self.train_labels.to(self.device).long()
-        self.val_labels = self.val_labels.to(self.device).long()
-        self.test_labels = self.test_labels.to(self.device).long()
-
         self.train_labels_onehot = F.one_hot(self.train_labels, self.onehot_num)
-        self.val_labels_onehot = F.one_hot(self.val_labels, self.onehot_num)
-        self.test_labels_onehot = F.one_hot(self.test_labels, self.onehot_num)
 
     def train(self):
         """执行训练过程"""
@@ -275,14 +270,14 @@ class Trainer_allprior:
                 print(f'On tranining epoch {i + 1}: RNA recon loss {loss1}, GRN recon loss {loss2}')
     
 
-    def GRN_Reconstruct(self):
+    def Get_GRN(self):
         """执行测试评估"""
         with torch.no_grad():
             test_y, test_y_prob = self.scc.classifier(self.feature, self.adj_train, self.test_ids)
             test_set = pd.DataFrame(self.test_ids.cpu().numpy(),columns=['Gene1','Gene2'])
             test_set['Gene1'] = self.genes[test_set['Gene1'].values]
             test_set['Gene2'] = self.genes[test_set['Gene2'].values]
-            if self.arg['flag']:  
+            if self.args['flag']:  
                 test_set['Prob_0'] = test_y_prob.detach().cpu().numpy()[:,0]
                 test_set['Prob_1'] = test_y_prob.detach().cpu().numpy()[:,1]
                 test_set['Prob_2'] = test_y_prob.detach().cpu().numpy()[:,2]

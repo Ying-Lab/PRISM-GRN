@@ -27,6 +27,8 @@ flag: different tasks, True is causality prediction; False is undirected GRN rec
 
 cuda: Whether using GPU. Default is True.
 
+Paring: Whether the scRNA-seq and scATAC-seq data are paired. Default is True.
+
 epoch: Training epoches. Default is 2000.
 
 lr: Initial learning rate. Default is 0.0003
