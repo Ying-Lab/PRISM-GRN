@@ -177,7 +177,8 @@ class Trainer:
                 test_set['Prob_0'] = test_y_prob.detach().cpu().numpy()[:,0]
                 test_set['Prob_1'] = test_y_prob.detach().cpu().numpy()[:,1]
                 test_set['Prob_2'] = test_y_prob.detach().cpu().numpy()[:,2]
-                test_set['Pred_Label'] = test_y.detach().cpu().numpy()[:,1]                                                                                                                                                       
+                y_pred = test_set[['Prob_0','Prob_1','Prob_2']].values
+                test_set['Pred_Label'] = np.argmax(y_pred, axis=1)                                                                                                                                                     
             else:
                 test_set['Prob'] = test_y_prob.detach().cpu().numpy()[:,1]
                 test_set['Pred_Label'] = test_y.detach().cpu().numpy()[:,1]
