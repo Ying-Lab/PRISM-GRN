@@ -38,9 +38,6 @@ Example
 -----
 for GRN Reconstruction
 ```bash
-from prism import model
-from prism import utils
-from utils import load_sc_data
 
 args['flag'] = False
 adj_train, feature, feature_ATAC, train_ids, val_ids, test_ids, train_labels, val_labels, test_labels = load_sc_data(Expression_data_path, Genescore_data_path, label_path)
