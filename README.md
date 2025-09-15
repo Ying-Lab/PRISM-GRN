@@ -77,3 +77,5 @@ The more detailed usage is exemplified in demo.
 
 Citation
 -----
+Genome Research
+doi: 10.1101/gr.280757.125
