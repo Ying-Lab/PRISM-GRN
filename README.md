@@ -1,4 +1,4 @@
-# PRISM
+# PRISM-GRN
 Recovering gene regulatory networks in single-cell multi-omics data with PRISM-GRN
 ![The framework of PRISM](https://github.com/Ying-Lab/PRISM/blob/main/Figure1.jpg)
 
