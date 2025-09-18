@@ -7,7 +7,7 @@ library(Matrix)
 library(data.table)
 library(BiocGenerics)
 library(GenomicRanges)
-library(future) ## 是否调用多线程
+library(future)
 
 library(EnsDb.Hsapiens.v75)
 library(BSgenome.Hsapiens.UCSC.hg19)
