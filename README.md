@@ -11,7 +11,7 @@ Installation
 -----
 
 ```bash
-git clone https://github.com/Ying-Lab/PRISM
+git clone https://github.com/Ying-Lab/PRISM-GRN
 cd PRISM
 pip install -r requirements.txt 
 python setup.py install
