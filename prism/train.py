@@ -139,7 +139,7 @@ class Trainer:
         """执行验证过程"""
         val_loss1 = self.losses[0].step(self.feature, self.feature_atac, self.adj_train, self.val_ids, self.val_labels_onehot)
         val_loss2 = self.losses[1].step(self.feature, self.feature_atac, self.adj_train, self.val_ids, self.val_labels_onehot)
-        val_y, val_y_prob = self.scc.classifier(self.feature, self.adj_train, self.val_ids)
+        val_y, val_y_prob = self.scc.classifier(self.feature, self.adj_train, self.val_ids, self.feature_atac)
 
         if self.args['flag']:
             val_acc = self.Eval_acc(val_y_prob, self.val_labels)
@@ -155,7 +155,7 @@ class Trainer:
     def evaluate(self):
         """执行测试评估"""
         with torch.no_grad():
-            test_y, test_y_prob = self.scc.classifier(self.feature, self.adj_train, self.test_ids)
+            test_y, test_y_prob = self.scc.classifier(self.feature, self.adj_train, self.test_ids, self.feature_atac)
 
             if self.args['flag']:
                 test_acc = self.Eval_acc(test_y_prob, self.test_labels).item()
@@ -169,7 +169,7 @@ class Trainer:
     def Get_GRN(self):
         """执行测试评估"""
         with torch.no_grad():
-            test_y, test_y_prob = self.scc.classifier(self.feature, self.adj_train, self.test_ids)
+            test_y, test_y_prob = self.scc.classifier(self.feature, self.adj_train, self.test_ids, self.feature_atac)
             test_set = pd.DataFrame(self.test_ids.cpu().numpy(),columns=['Gene1','Gene2'])
             test_set['Gene1'] = self.genes[test_set['Gene1'].values]
             test_set['Gene2'] = self.genes[test_set['Gene2'].values]
@@ -274,7 +274,7 @@ class Trainer_allprior:
     def Get_GRN(self):
         """执行测试评估"""
         with torch.no_grad():
-            test_y, test_y_prob = self.scc.classifier(self.feature, self.adj_train, self.test_ids)
+            test_y, test_y_prob = self.scc.classifier(self.feature, self.adj_train, self.test_ids, self.feature_atac)
             test_set = pd.DataFrame(self.test_ids.cpu().numpy(),columns=['Gene1','Gene2'])
             test_set['Gene1'] = self.genes[test_set['Gene1'].values]
             test_set['Gene2'] = self.genes[test_set['Gene2'].values]
