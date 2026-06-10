@@ -189,8 +189,54 @@ class DotProductPredictor(nn.Module):
 		h = F.dropout(h, self.dropout)
 		x = torch.mm(h, h.T)
 		return self.act(x)
-    
 
+
+def _encode_atac_gene_embedding(module, XATAC, reference=None):
+    """
+    Encode ATAC features into a gene-level embedding for edge prediction.
+
+    When ATAC is unavailable, return a zero embedding so the edge classifier
+    can keep its shape without relying on a separate code path.
+    """
+    if XATAC is None:
+        if reference is None:
+            return None
+        return reference.new_zeros(reference.size(0), module.ns)
+
+    XATAC = XATAC.to(module.device)
+    atac_loc, _ = module.encoder_ATAC(XATAC)
+    return F.relu(atac_loc) * module.atac_edge_scale
+
+
+def _build_edge_gene_embeddings(module, XRNA, XATAC, adj):
+    """
+    Build the RNA and ATAC gene embeddings used by the GRN edge classifier.
+    """
+    XRNA = XRNA.to(module.device)
+    adj = adj.to(module.device)
+
+    XGATembedding = module.GeneGRNEncoder(XRNA, adj)
+    XGATembedding2 = module.GeneGRNEncoder_VAE(XRNA, adj)
+    GeneEmbedding_GAT, _ = module.encoder_GAT(XGATembedding2)
+    GeneEmbedding_RNA = F.relu(
+        module.linear_s(torch.cat((XGATembedding, GeneEmbedding_GAT), dim=1))
+    )
+    GeneEmbedding_ATAC = _encode_atac_gene_embedding(module, XATAC, GeneEmbedding_RNA)
+    return GeneEmbedding_RNA, GeneEmbedding_ATAC
+
+
+def _build_edge_features(module, XRNA, XATAC, adj, train_ids):
+    GeneEmbedding_RNA, GeneEmbedding_ATAC = _build_edge_gene_embeddings(
+        module, XRNA, XATAC, adj
+    )
+
+    Gene1_RNA = GeneEmbedding_RNA[train_ids[:, 0]]
+    Gene2_RNA = GeneEmbedding_RNA[train_ids[:, 1]]
+    Gene1_ATAC = GeneEmbedding_ATAC[train_ids[:, 0]]
+    Gene2_ATAC = GeneEmbedding_ATAC[train_ids[:, 1]]
+
+    return torch.cat([Gene1_RNA, Gene1_ATAC, Gene2_RNA, Gene2_ATAC], dim=1)
+    
 
 ##define the entity model
 # gene * cell  
@@ -210,6 +256,7 @@ class PRISM(nn.Module):
                  config_enum = "parallel",
                  use_cuda = True,
                  aux_loss_multiplier = 1, ## hyperparameter
+                 atac_edge_scale = 2.0,
     ):
         super().__init__()    
         ## input parameters
@@ -226,6 +273,7 @@ class PRISM(nn.Module):
             self.device = torch.device("cpu")
         self.allow_broadcast = config_enum 
         self.aux_loss_multiplier = aux_loss_multiplier
+        self.atac_edge_scale = atac_edge_scale
         ## predicting GRN edge based on gene embeddings
         if flag:
             self.ny = 3
@@ -279,7 +327,7 @@ class PRISM(nn.Module):
         ## directly produce y based on the paired gene embeddings (2 * ns) VAE-based ONEHOT CATEGORIAL DIST 
 
         self.encoder_GRNedges = MLP(
-            [self.ns * 2] + [self.nhid] + [self.ny],
+            [self.ns * 4] + [self.nhid] + [self.ny],
             activation = nn.Softplus,
             output_activation = nn.Softmax,
             allow_broadcast = self.allow_broadcast,
@@ -370,7 +418,7 @@ class PRISM(nn.Module):
 
 
 
-    def classifier(self, XRNA, adj, train_ids):
+    def classifier(self, XRNA, adj, train_ids, XATAC=None):
         """
         classify a cell (or a batch of cells)
 
@@ -380,17 +428,7 @@ class PRISM(nn.Module):
         """
         # use the trained model q(y|x) = categorical(alpha(x))
         # compute all class probabilities for the cell(s)
-        XRNA = XRNA.to(self.device)
-        adj = adj.to(self.device)
-        XGATembedding = self.GeneGRNEncoder(XRNA, adj).to(self.device) 
-        XGATembedding2 = self.GeneGRNEncoder_VAE(XRNA, adj).to(self.device)
-        GeneEmbedding_GAT,_ = self.encoder_GAT(XGATembedding2)
-        GeneEmbedding_GVAE = torch.cat((XGATembedding, GeneEmbedding_GAT), dim=1)
-        GeneEmbedding_GVAE = F.relu(self.linear_s(GeneEmbedding_GVAE))
-
-        Gene1 = GeneEmbedding_GVAE[train_ids[:, 0]]
-        Gene2 = GeneEmbedding_GVAE[train_ids[:, 1]]
-        X_edges = torch.cat([Gene1, Gene2], dim=1)
+        X_edges = _build_edge_features(self, XRNA, XATAC, adj, train_ids)
         y_alpha = self.encoder_GRNedges(X_edges).to(self.device)
         res, ind = torch.topk(y_alpha, 1)
         edge_y = torch.zeros_like(y_alpha).scatter_(1, ind, 1.0).to(self.device)
@@ -408,14 +446,7 @@ class PRISM(nn.Module):
         # inform pyro that the variables in the batch of xs, ys are conditionally independent
         with pyro.plate('data'):
             # this here is the extra term to yield an auxiliary loss that we do gradient descent on
-                XGATembedding = self.GeneGRNEncoder(XRNA, adj).to(self.device) ## GAT
-                XGATembedding2 = self.GeneGRNEncoder_VAE(XRNA, adj).to(self.device)
-                GeneEmbedding_GAT,_ = self.encoder_GAT(XGATembedding2) ## VAE_embedding based on GAT, using mean values instead of sampling
-                GeneEmbedding_GVAE = torch.cat((XGATembedding, GeneEmbedding_GAT), dim=1)
-                GeneEmbedding_GVAE = F.relu(self.linear_s(GeneEmbedding_GVAE)).to(self.device)
-                Gene1 = GeneEmbedding_GVAE[train_ids[:, 0]]
-                Gene2 = GeneEmbedding_GVAE[train_ids[:, 1]]
-                X_edges = torch.cat([Gene1, Gene2], dim=1)
+                X_edges = _build_edge_features(self, XRNA, XATAC, adj, train_ids)
                 alpha_y = self.encoder_GRNedges(X_edges).to(self.device)
                 ## need the real label
                 with pyro.poutine.scale(scale = self.aux_loss_multiplier):
@@ -446,6 +477,7 @@ class PRISM_UP(nn.Module):
                  config_enum = "parallel",
                  use_cuda = True,
                  aux_loss_multiplier = 1, ## hyperparameter
+                 atac_edge_scale = 2.0,
     ):
         super().__init__()    
         ## input parameters
@@ -462,6 +494,7 @@ class PRISM_UP(nn.Module):
             self.device = torch.device("cpu")
         self.allow_broadcast = config_enum 
         self.aux_loss_multiplier = aux_loss_multiplier
+        self.atac_edge_scale = atac_edge_scale
         ## predicting GRN edge based on gene embeddings
         if flag:
             self.ny = 3
@@ -513,7 +546,7 @@ class PRISM_UP(nn.Module):
         ## directly produce y based on the paired gene embeddings (2 * ns) VAE-based ONEHOT CATEGORIAL DIST 
 
         self.encoder_GRNedges = MLP(
-            [self.ns * 2] + [self.nhid] + [self.ny],
+            [self.ns * 4] + [self.nhid] + [self.ny],
             activation = nn.Softplus,
             output_activation = nn.Softmax,
             allow_broadcast = self.allow_broadcast,
@@ -606,7 +639,7 @@ class PRISM_UP(nn.Module):
     #     recon_GRN = self.GRNDecoder(zgrn, XRNA, adj, train_ids)
     #     return z_mean, mu, logvar, z_sum, recon_GRN
 
-    def classifier(self, XRNA, adj, train_ids):
+    def classifier(self, XRNA, adj, train_ids, XATAC=None):
         """
         classify a cell (or a batch of cells)
 
@@ -616,15 +649,7 @@ class PRISM_UP(nn.Module):
         """
         # use the trained model q(y|x) = categorical(alpha(x))
         # compute all class probabilities for the cell(s)
-        XGATembedding = self.GeneGRNEncoder(XRNA, adj) 
-        XGATembedding2 = self.GeneGRNEncoder_VAE(XRNA, adj)
-        GeneEmbedding_GAT,_ = self.encoder_GAT(XGATembedding2)
-        GeneEmbedding_GVAE = torch.cat((XGATembedding, GeneEmbedding_GAT), dim=1)
-        GeneEmbedding_GVAE = F.relu(self.linear_s(GeneEmbedding_GVAE))
-
-        Gene1 = GeneEmbedding_GVAE[train_ids[:, 0]]
-        Gene2 = GeneEmbedding_GVAE[train_ids[:, 1]]
-        X_edges = torch.cat([Gene1, Gene2], dim=1)
+        X_edges = _build_edge_features(self, XRNA, XATAC, adj, train_ids)
         y_alpha = self.encoder_GRNedges(X_edges)
         res, ind = torch.topk(y_alpha, 1)
         edge_y = torch.zeros_like(y_alpha).scatter_(1, ind, 1.0)
@@ -642,14 +667,7 @@ class PRISM_UP(nn.Module):
         # inform pyro that the variables in the batch of xs, ys are conditionally independent
         with pyro.plate('data'):
             # this here is the extra term to yield an auxiliary loss that we do gradient descent on
-                XGATembedding = self.GeneGRNEncoder(XRNA, adj) ## GAT
-                XGATembedding2 = self.GeneGRNEncoder_VAE(XRNA, adj)
-                GeneEmbedding_GAT,_ = self.encoder_GAT(XGATembedding2) ## VAE_embedding based on GAT, using mean values instead of sampling
-                GeneEmbedding_GVAE = torch.cat((XGATembedding, GeneEmbedding_GAT), dim=1)
-                GeneEmbedding_GVAE = F.relu(self.linear_s(GeneEmbedding_GVAE))
-                Gene1 = GeneEmbedding_GVAE[train_ids[:, 0]]
-                Gene2 = GeneEmbedding_GVAE[train_ids[:, 1]]
-                X_edges = torch.cat([Gene1, Gene2], dim=1)
+                X_edges = _build_edge_features(self, XRNA, XATAC, adj, train_ids)
                 alpha_y = self.encoder_GRNedges(X_edges)
                 ## need the real label
                 with pyro.poutine.scale(scale = self.aux_loss_multiplier):
@@ -680,6 +698,7 @@ class PRISM_UP(nn.Module):
                  config_enum = "parallel",
                  use_cuda = True,
                  aux_loss_multiplier = 1, ## hyperparameter
+                 atac_edge_scale = 2.0,
     ):
         super().__init__()    
         ## input parameters
@@ -696,6 +715,7 @@ class PRISM_UP(nn.Module):
             self.device = torch.device("cpu")
         self.allow_broadcast = config_enum 
         self.aux_loss_multiplier = aux_loss_multiplier
+        self.atac_edge_scale = atac_edge_scale
         ## predicting GRN edge based on gene embeddings
         if flag:
             self.ny = 3
@@ -747,7 +767,7 @@ class PRISM_UP(nn.Module):
         ## directly produce y based on the paired gene embeddings (2 * ns) VAE-based ONEHOT CATEGORIAL DIST 
 
         self.encoder_GRNedges = MLP(
-            [self.ns * 2] + [self.nhid] + [self.ny],
+            [self.ns * 4] + [self.nhid] + [self.ny],
             activation = nn.Softplus,
             output_activation = nn.Softmax,
             allow_broadcast = self.allow_broadcast,
@@ -840,7 +860,7 @@ class PRISM_UP(nn.Module):
     #     recon_GRN = self.GRNDecoder(zgrn, XRNA, adj, train_ids)
     #     return z_mean, mu, logvar, z_sum, recon_GRN
 
-    def classifier(self, XRNA, adj, train_ids):
+    def classifier(self, XRNA, adj, train_ids, XATAC=None):
         """
         classify a cell (or a batch of cells)
 
@@ -850,15 +870,7 @@ class PRISM_UP(nn.Module):
         """
         # use the trained model q(y|x) = categorical(alpha(x))
         # compute all class probabilities for the cell(s)
-        XGATembedding = self.GeneGRNEncoder(XRNA, adj) 
-        XGATembedding2 = self.GeneGRNEncoder_VAE(XRNA, adj)
-        GeneEmbedding_GAT,_ = self.encoder_GAT(XGATembedding2)
-        GeneEmbedding_GVAE = torch.cat((XGATembedding, GeneEmbedding_GAT), dim=1)
-        GeneEmbedding_GVAE = F.relu(self.linear_s(GeneEmbedding_GVAE))
-
-        Gene1 = GeneEmbedding_GVAE[train_ids[:, 0]]
-        Gene2 = GeneEmbedding_GVAE[train_ids[:, 1]]
-        X_edges = torch.cat([Gene1, Gene2], dim=1)
+        X_edges = _build_edge_features(self, XRNA, XATAC, adj, train_ids)
         y_alpha = self.encoder_GRNedges(X_edges)
         res, ind = torch.topk(y_alpha, 1)
         edge_y = torch.zeros_like(y_alpha).scatter_(1, ind, 1.0)
@@ -876,14 +888,7 @@ class PRISM_UP(nn.Module):
         # inform pyro that the variables in the batch of xs, ys are conditionally independent
         with pyro.plate('data'):
             # this here is the extra term to yield an auxiliary loss that we do gradient descent on
-                XGATembedding = self.GeneGRNEncoder(XRNA, adj) ## GAT
-                XGATembedding2 = self.GeneGRNEncoder_VAE(XRNA, adj)
-                GeneEmbedding_GAT,_ = self.encoder_GAT(XGATembedding2) ## VAE_embedding based on GAT, using mean values instead of sampling
-                GeneEmbedding_GVAE = torch.cat((XGATembedding, GeneEmbedding_GAT), dim=1)
-                GeneEmbedding_GVAE = F.relu(self.linear_s(GeneEmbedding_GVAE))
-                Gene1 = GeneEmbedding_GVAE[train_ids[:, 0]]
-                Gene2 = GeneEmbedding_GVAE[train_ids[:, 1]]
-                X_edges = torch.cat([Gene1, Gene2], dim=1)
+                X_edges = _build_edge_features(self, XRNA, XATAC, adj, train_ids)
                 alpha_y = self.encoder_GRNedges(X_edges)
                 ## need the real label
                 with pyro.poutine.scale(scale = self.aux_loss_multiplier):
